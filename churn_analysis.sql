@@ -200,3 +200,110 @@ SELECT
 FROM RankedChurn
 GROUP BY Factor
 ORDER BY SpreadPp DESC;
+
+
+-- Phase 3: What are the warning signs?
+
+-- Churn rate % and gap for each warning sign
+WITH GroupChurn AS (
+	-- each factor is listed below; this gives account count, churned count and churn rate for every group in it
+	SELECT f.Factor, f.GroupName,
+		COUNT(*) AS Accounts,
+		SUM(ChurnedInWindow) AS Churned,
+		100.0 * SUM(ChurnedInWindow) / COUNT(*) AS ChurnPct
+	FROM dbo.vw_StartingBase
+	-- turns each column into rows of (Factor, GroupName) so one query covers all nine factors
+	CROSS APPLY (VALUES
+		('OnboardingCompleted', CAST(OnboardingCompleted AS VARCHAR(10))),
+		-- Seat utilization in groups of 10
+		('SeatUsedPct', CASE
+			WHEN SeatUtilizationPct < 10 THEN '0-9'
+			WHEN SeatUtilizationPct < 20 THEN '10-19'
+			WHEN SeatUtilizationPct < 30 THEN '20-29'
+			WHEN SeatUtilizationPct < 40 THEN '30-39'
+			WHEN SeatUtilizationPct < 50 THEN '40-49'
+			WHEN SeatUtilizationPct < 60 THEN '50-59'
+			WHEN SeatUtilizationPct < 70 THEN '60-69'
+			WHEN SeatUtilizationPct < 80 THEN '70-79'
+			WHEN SeatUtilizationPct < 90 THEN '80-89'
+			ELSE '90-100' END),
+		-- NPS survey score (0-10); blank means they didn't answer
+		('NPS', CASE
+			WHEN NPS IS NULL THEN 'a: No Answer'
+			WHEN NPS <= 6 THEN 'b: Detractor'
+			WHEN NPS IN (7,8) THEN 'c: Passive'
+			WHEN NPS IN (9,10) THEN 'd: Promoter'
+			ELSE 'a: No Answer' END),
+		-- letter prefixes keep the groups in order when they sort as text
+		('FeatureAdoptionPct', CASE
+			WHEN FeatureAdoptionPct < 10 THEN 'a: 0-9'
+			WHEN FeatureAdoptionPct < 20 THEN 'b: 10-19'
+			WHEN FeatureAdoptionPct < 30 THEN 'c: 20-29'
+			WHEN FeatureAdoptionPct < 40 THEN 'd: 30-39'
+			WHEN FeatureAdoptionPct < 50 THEN 'e: 40-49'
+			WHEN FeatureAdoptionPct < 60 THEN 'f: 50-59'
+			WHEN FeatureAdoptionPct < 70 THEN 'g: 60-69'
+			WHEN FeatureAdoptionPct < 80 THEN 'h: 70-79'
+			WHEN FeatureAdoptionPct < 90 THEN 'i: 80-89'
+			ELSE 'j: 90-100' END),
+		-- 5+ grouped because every group above 5 has too few accounts
+		('TrainingSessions', CASE
+			WHEN TrainingSessions = 0 THEN '0'
+			WHEN TrainingSessions = 1 THEN '1'
+			WHEN TrainingSessions = 2 THEN '2'
+			WHEN TrainingSessions = 3 THEN '3'
+			WHEN TrainingSessions = 4 THEN '4'
+			ELSE '5+' END),
+		-- edge at 31 because churn jumps between day 30 and day 31
+		('DaysToGoLive', CASE
+			WHEN DaysToGoLive < 15 THEN 'a: 1-14'
+			WHEN DaysToGoLive < 31 THEN 'b: 15-30'
+			WHEN DaysToGoLive < 45 THEN 'c: 31-44'
+			WHEN DaysToGoLive < 60 THEN 'd: 45-59'
+			ELSE 'e: 60+' END),
+		-- 6+ grouped because 6, 7 and 8 have only 545, 226 and 128 accounts
+		('IntegrationsConnected', CASE
+			WHEN IntegrationsConnected = 0 THEN '0'
+			WHEN IntegrationsConnected = 1 THEN '1'
+			WHEN IntegrationsConnected = 2 THEN '2'
+			WHEN IntegrationsConnected = 3 THEN '3'
+			WHEN IntegrationsConnected = 4 THEN '4'
+			WHEN IntegrationsConnected = 5 THEN '5'
+			ELSE '6+' END),
+		-- 2+ grouped because 3 and 4 have only 27 and 6 accounts
+		('EscalatedTickets90d', CASE
+			WHEN EscalatedTickets90d >= 2 THEN '2+'
+			ELSE CAST(EscalatedTickets90d AS VARCHAR(10)) END),
+		('CSMAssigned', CAST(CSMAssigned AS VARCHAR(10)))
+	) AS f(Factor, GroupName)
+	GROUP BY f.Factor, f.GroupName
+), WindowBaseline AS (
+	SELECT
+		Factor,
+		GroupName,
+		Accounts,
+		ChurnPct,
+		-- each factor's groups add back up to the whole base, so this gives the baseline
+		100.0 * SUM(Churned) OVER (PARTITION BY Factor)
+			/ SUM(Accounts) OVER (PARTITION BY Factor) AS BaselinePct
+	FROM GroupChurn
+), GroupVsBaseline AS (
+	SELECT
+		Factor,
+		GroupName,
+		Accounts,
+		ChurnPct,
+		BaselinePct,
+		ChurnPct - BaselinePct AS DiffPp
+	FROM WindowBaseline
+)
+
+SELECT
+	Factor,
+	GroupName,
+	Accounts,
+	ChurnPct,
+	BaselinePct,
+	DiffPp
+FROM GroupVsBaseline
+ORDER BY Factor, GroupName;
