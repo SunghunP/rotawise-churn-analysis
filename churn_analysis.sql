@@ -307,3 +307,56 @@ SELECT
 	DiffPp
 FROM GroupVsBaseline
 ORDER BY Factor, GroupName;
+
+
+-- Phase 4: When do they churn?
+
+-- Churn rate % by tenure month, monthly contracts
+-- count accounts and leavers for each month.
+WITH ByMonth AS (
+	SELECT
+		TenureMonths,
+		-- every monthly account at this tenure
+		COUNT(*) AS Accounts,
+		-- Sum 1 for churned and 0 for not churned
+		SUM(CASE WHEN Churned = 1 THEN 1 ELSE 0 END) AS Churned
+	-- using every account ever, not just the one year window
+	FROM dbo.vw_Accounts
+	WHERE ContractType = 'Monthly'
+	GROUP BY TenureMonths
+), ActiveCounts AS (
+	-- work out how many were still around at the start of each month (running total backwards).
+	SELECT
+		TenureMonths,
+		Accounts,
+		Churned,
+		-- Window function with nothing in the brackets adds up the accounts from all rows
+		-- we need this number for a later calculation
+		SUM(Accounts) OVER () AS TotalAccounts,
+		-- ordering by DESC means it starts summing at month 57 and works backwards adding each rows accounts by month from 57, 56 ... etc
+		SUM(Accounts) OVER (ORDER BY TenureMonths DESC) AS ActiveAtStartOfMonth
+	FROM ByMonth
+), Rates AS (
+	-- turn the counts into two percentages.
+	SELECT
+		TenureMonths,
+		Churned,
+		TotalAccounts,
+		ActiveAtStartOfMonth,
+		-- Calculates the Churn percentage from churned acc / accounts still around at the start of the month
+		100.0 * Churned / ActiveAtStartOfMonth AS ChurnRatePct,
+		-- calculates the Churn percentage from churned acc / total accounts
+		100.0 * Churned / TotalAccounts AS PctOfAllMonthly
+	FROM ActiveCounts
+)
+-- add how much has been lost so far (running total forwards).
+SELECT
+	TenureMonths,
+	Churned,
+	ActiveAtStartOfMonth,
+	ChurnRatePct,
+	PctOfAllMonthly,
+	-- cumulative churn % adding over month by month
+	100.0 * SUM(Churned) OVER (ORDER BY TenureMonths) / TotalAccounts AS CumulativePctLost
+FROM Rates
+ORDER BY TenureMonths;
