@@ -360,3 +360,85 @@ SELECT
 	100.0 * SUM(Churned) OVER (ORDER BY TenureMonths) / TotalAccounts AS CumulativePctLost
 FROM Rates
 ORDER BY TenureMonths;
+
+
+-- Phase 5: Is it real?
+
+-- CSM coverage % by plan
+WITH PlanCSM AS (
+  SELECT
+    [Plan],
+    -- use a case to count the CSMs
+    SUM(CASE WHEN CSMAssigned = 1 THEN 1 ELSE 0 END) AS NumOfCSM,
+    COUNT([Plan]) AS NumOfAccounts
+  FROM vw_StartingBase
+  GROUP BY [Plan]
+)
+SELECT
+  [Plan],
+  NumOfCSM,
+  NumOfAccounts,
+  100.0 * NumOfCSM / NumOfAccounts AS PctAccountsWithCSM
+FROM PlanCSM
+ORDER BY NumOfCSM;
+
+-- Churn rate % with and without a CSM, by plan
+WITH ChurnByCSMAndPlan AS (
+  SELECT
+    [Plan],
+    CSMAssigned,
+    COUNT([Plan]) AS TotalAccounts,
+    SUM(CASE WHEN ChurnedInWindow = 1 THEN 1 ELSE 0 END) AS ChurnedAccounts
+  FROM vw_StartingBase
+  GROUP BY [Plan], CSMAssigned
+)
+SELECT
+  [Plan],
+  CSMAssigned,
+  TotalAccounts,
+  ChurnedAccounts,
+  100.0 * ChurnedAccounts / TotalAccounts AS ChurnPct
+FROM ChurnByCSMAndPlan
+ORDER BY [Plan], CSMAssigned;
+
+-- Churn rate % with and without onboarding, by plan
+WITH ChurnOnboarding AS (
+  SELECT
+    [Plan],
+    OnboardingCompleted,
+    COUNT([Plan]) AS TotalAccounts,
+    SUM(CASE WHEN ChurnedInWindow = 1 THEN 1 ELSE 0 END) AS ChurnedAccounts
+  FROM vw_StartingBase
+  GROUP BY [Plan], OnboardingCompleted
+)
+SELECT
+  [Plan],
+  OnboardingCompleted,
+  TotalAccounts,
+  ChurnedAccounts,
+  100.0 * ChurnedAccounts / TotalAccounts AS ChurnPct
+FROM ChurnOnboarding
+ORDER BY [Plan], OnboardingCompleted;
+
+-- Share of accounts lost vs share of MRR lost, by plan
+WITH ByPlan AS (
+  SELECT
+    [Plan],
+    -- how many accounts churned in this plan
+    COUNT(*) AS ChurnedAccounts,
+    -- total monthly revenue those churned accounts were paying
+    SUM(MRR) AS LostMRR
+  FROM vw_StartingBase
+  WHERE ChurnedInWindow = 1
+  GROUP BY [Plan]
+)
+SELECT
+  [Plan],
+  ChurnedAccounts,
+  -- this plan's churned accounts / all churned accounts
+  100.0 * ChurnedAccounts / SUM(ChurnedAccounts) OVER () AS PctOfChurnedAccounts,
+  LostMRR,
+  -- this plan's lost MRR / all lost MRR
+  100.0 * LostMRR / SUM(LostMRR) OVER () AS PctOfLostMRR
+FROM ByPlan
+ORDER BY PctOfLostMRR DESC;
