@@ -442,3 +442,232 @@ SELECT
   100.0 * LostMRR / SUM(LostMRR) OVER () AS PctOfLostMRR
 FROM ByPlan
 ORDER BY PctOfLostMRR DESC;
+
+
+-- Phase 6: Risk score and call list
+
+-- Churn gap for each warning sign (sets the points)
+WITH Signs AS (
+  SELECT
+    f.Sign,
+    f.AtRisk,
+    ChurnedInWindow
+  FROM vw_StartingBase
+  CROSS APPLY (VALUES
+    ('OnboardingCompleted',   CASE WHEN OnboardingCompleted = 0 THEN 1 ELSE 0 END),
+    ('TrainingSessions',      CASE WHEN TrainingSessions = 0 THEN 1 ELSE 0 END),
+    ('DaysToGoLive',          CASE WHEN DaysToGoLive >= 31 THEN 1 ELSE 0 END),
+    ('IntegrationsConnected', CASE WHEN IntegrationsConnected <= 1 THEN 1 ELSE 0 END),
+    ('SeatUtilizationPct',    CASE WHEN SeatUtilizationPct < 60 THEN 1 ELSE 0 END),
+    ('FeatureAdoptionPct',    CASE WHEN FeatureAdoptionPct < 50 THEN 1 ELSE 0 END),
+    -- detractor (0-6) or didnt answer
+    ('NPS',                   CASE WHEN NPS <= 6 OR NPS IS NULL THEN 1 ELSE 0 END),
+    ('EscalatedTickets90d',   CASE WHEN EscalatedTickets90d >= 1 THEN 1 ELSE 0 END)
+  ) AS f(Sign, AtRisk)
+)
+SELECT
+  Sign,
+  AtRisk,
+  COUNT(*) AS Accounts,
+  100.0 * SUM(ChurnedInWindow) / COUNT(*) AS ChurnPct
+FROM Signs
+GROUP BY Sign, AtRisk
+ORDER BY Sign, AtRisk;
+
+-- Churn rate % by risk score
+WITH Scored AS (
+  SELECT
+    ChurnedInWindow,
+    -- add up the points for every warning sign the account has (0 = healthy, 20 = every sign)
+    CASE WHEN OnboardingCompleted = 0 THEN 4 ELSE 0 END
+    + CASE WHEN TrainingSessions = 0 THEN 3 ELSE 0 END
+    + CASE WHEN SeatUtilizationPct < 60 THEN 3 ELSE 0 END
+    + CASE WHEN DaysToGoLive >= 31 THEN 3 ELSE 0 END
+    + CASE WHEN IntegrationsConnected <= 1 THEN 2 ELSE 0 END
+    + CASE WHEN FeatureAdoptionPct < 50 THEN 2 ELSE 0 END
+    + CASE WHEN (NPS <= 6 OR NPS IS NULL) THEN 2 ELSE 0 END
+    + CASE WHEN EscalatedTickets90d >= 1 THEN 1 ELSE 0 END AS RiskScore
+  FROM vw_StartingBase
+)
+SELECT
+  RiskScore,
+  COUNT(*) AS Accounts,
+  100.0 * SUM(ChurnedInWindow) / COUNT(*) AS ChurnPct
+FROM Scored
+GROUP BY RiskScore
+ORDER BY RiskScore;
+
+-- Top 640 accounts by expected loss, summary by plan
+WITH ScoredLastYear AS (
+  -- last year's starting accounts, each with its plan and risk score
+  SELECT
+    [Plan],
+    ChurnedInWindow,
+    CASE WHEN OnboardingCompleted = 0 THEN 4 ELSE 0 END
+    + CASE WHEN TrainingSessions = 0 THEN 3 ELSE 0 END
+    + CASE WHEN SeatUtilizationPct < 60 THEN 3 ELSE 0 END
+    + CASE WHEN DaysToGoLive >= 31 THEN 3 ELSE 0 END
+    + CASE WHEN IntegrationsConnected <= 1 THEN 2 ELSE 0 END
+    + CASE WHEN FeatureAdoptionPct < 50 THEN 2 ELSE 0 END
+    + CASE WHEN (NPS <= 6 OR NPS IS NULL) THEN 2 ELSE 0 END
+    + CASE WHEN EscalatedTickets90d >= 1 THEN 1 ELSE 0 END AS RiskScore
+  FROM vw_startingBase
+), Lookup AS (
+  -- churn chance (0 to 1) for each plan and score, from all of last year's starting accounts
+  -- grouped by plan too, because Enterprise churns about half as much as the mix at the same score
+  -- 1.0 * stops integer division from rounding everything to 0
+  -- Accounts shows how many accounts each chance is based on (small = unreliable)
+  SELECT
+    [Plan],
+    RiskScore,
+    COUNT(*) AS Accounts,
+    1.0 * SUM(ChurnedInWindow) / COUNT(*) AS ChurnChance
+  FROM ScoredLastYear
+  GROUP BY [Plan], RiskScore
+), Active AS (
+  -- today's customers with their score (same 8 CASE WHENs as above, keep them in sync)
+  -- 33,588 rows
+  SELECT
+    AccountID,
+    [Plan],
+    MRR,
+    CASE WHEN OnboardingCompleted = 0 THEN 4 ELSE 0 END
+    + CASE WHEN TrainingSessions = 0 THEN 3 ELSE 0 END
+    + CASE WHEN SeatUtilizationPct < 60 THEN 3 ELSE 0 END
+    + CASE WHEN DaysToGoLive >= 31 THEN 3 ELSE 0 END
+    + CASE WHEN IntegrationsConnected <= 1 THEN 2 ELSE 0 END
+    + CASE WHEN FeatureAdoptionPct < 50 THEN 2 ELSE 0 END
+    + CASE WHEN (NPS <= 6 OR NPS IS NULL) THEN 2 ELSE 0 END
+    + CASE WHEN EscalatedTickets90d >= 1 THEN 1 ELSE 0 END AS RiskScore
+  FROM dbo.vw_Accounts
+  -- keep accounts that have not churned
+  WHERE Churned = 0
+), CallList AS (
+  -- the 640 accounts with the most money at risk
+  -- each account gets the churn chance for its own plan and score
+  -- (joining on score only would match every account to all 3 plans)
+  -- ORDER BY is allowed in a CTE here only because of TOP
+  SELECT TOP 640
+    AccountID,
+    a.[Plan],
+    MRR,
+    a.RiskScore,
+    ChurnChance,
+    (MRR * ChurnChance) AS ExpectedLoss
+  FROM Active a
+  INNER JOIN Lookup l
+    ON a.RiskScore = l.RiskScore
+    AND a.[Plan] = l.[Plan]
+  ORDER BY ExpectedLoss DESC
+), PlanTotals AS (
+  -- one row of totals per plan
+  SELECT
+    [Plan],
+    COUNT(*) AS Accounts,
+    SUM(MRR) AS TotalMRR,
+    SUM(ExpectedLoss) AS TotalExpectedLoss
+  FROM CallList
+  GROUP BY [Plan]
+), Summary AS (
+  -- each plan's share of the total expected loss
+  -- SUM() OVER () adds up all plans while keeping one row per plan
+  SELECT
+    [Plan],
+    Accounts,
+    TotalMRR,
+    TotalExpectedLoss,
+    100.0 * TotalExpectedLoss / SUM(TotalExpectedLoss) OVER () AS PctOfExpectedLoss
+  FROM PlanTotals
+)
+
+SELECT
+  [Plan],
+  Accounts,
+  TotalMRR,
+  TotalExpectedLoss,
+  PctOfExpectedLoss
+FROM Summary;
+
+-- Every active account with its expected loss (exported for Tableau)
+WITH ScoredLastYear AS (
+  -- last year's starting accounts, each with its plan and risk score
+  SELECT
+    [Plan],
+    ChurnedInWindow,
+    CASE WHEN OnboardingCompleted = 0 THEN 4 ELSE 0 END
+    + CASE WHEN TrainingSessions = 0 THEN 3 ELSE 0 END
+    + CASE WHEN SeatUtilizationPct < 60 THEN 3 ELSE 0 END
+    + CASE WHEN DaysToGoLive >= 31 THEN 3 ELSE 0 END
+    + CASE WHEN IntegrationsConnected <= 1 THEN 2 ELSE 0 END
+    + CASE WHEN FeatureAdoptionPct < 50 THEN 2 ELSE 0 END
+    + CASE WHEN (NPS <= 6 OR NPS IS NULL) THEN 2 ELSE 0 END
+    + CASE WHEN EscalatedTickets90d >= 1 THEN 1 ELSE 0 END AS RiskScore
+  FROM vw_startingBase
+), Lookup AS (
+  -- churn chance (0 to 1) for each plan and score, from all of last year's starting accounts
+  -- 1.0 * stops integer division from rounding everything to 0
+  SELECT
+    [Plan],
+    RiskScore,
+    COUNT(*) AS Accounts,
+    1.0 * SUM(ChurnedInWindow) / COUNT(*) AS ChurnChance
+  FROM ScoredLastYear
+  GROUP BY [Plan], RiskScore
+), Active AS (
+  -- today's customers with their score (same 8 CASE WHENs as above, keep them in sync)
+  -- plus CSMAssigned and the 8 drivers for the dashboard tooltip
+  -- 33,588 rows
+  SELECT
+    AccountID,
+    [Plan],
+    MRR,
+    CSMAssigned,
+    OnboardingCompleted,
+    TrainingSessions,
+    SeatUtilizationPct,
+    DaysToGoLive,
+    IntegrationsConnected,
+    FeatureAdoptionPct,
+    NPS,
+    EscalatedTickets90d,
+    CASE WHEN OnboardingCompleted = 0 THEN 4 ELSE 0 END
+    + CASE WHEN TrainingSessions = 0 THEN 3 ELSE 0 END
+    + CASE WHEN SeatUtilizationPct < 60 THEN 3 ELSE 0 END
+    + CASE WHEN DaysToGoLive >= 31 THEN 3 ELSE 0 END
+    + CASE WHEN IntegrationsConnected <= 1 THEN 2 ELSE 0 END
+    + CASE WHEN FeatureAdoptionPct < 50 THEN 2 ELSE 0 END
+    + CASE WHEN (NPS <= 6 OR NPS IS NULL) THEN 2 ELSE 0 END
+    + CASE WHEN EscalatedTickets90d >= 1 THEN 1 ELSE 0 END AS RiskScore
+  FROM dbo.vw_Accounts
+  -- keep accounts that have not churned
+  WHERE Churned = 0
+), CallList AS (
+  -- every active account with its expected loss (Tableau picks the top 640)
+  -- each account gets the churn chance for its own plan and score
+  -- (joining on score only would match every account to all 3 plans)
+  SELECT
+    AccountID,
+    a.[Plan],
+    MRR,
+    CSMAssigned,
+    OnboardingCompleted,
+    TrainingSessions,
+    SeatUtilizationPct,
+    DaysToGoLive,
+    IntegrationsConnected,
+    FeatureAdoptionPct,
+    NPS,
+    EscalatedTickets90d,
+    a.RiskScore,
+    ChurnChance,
+    (MRR * ChurnChance) AS ExpectedLoss
+  FROM Active a
+  INNER JOIN Lookup l
+    ON a.RiskScore = l.RiskScore
+    AND a.[Plan] = l.[Plan]
+)
+
+-- every active account with its expected loss (for the dashboard)
+SELECT *
+FROM CallList
+ORDER BY ExpectedLoss DESC;
