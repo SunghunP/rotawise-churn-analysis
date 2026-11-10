@@ -497,6 +497,38 @@ FROM Scored
 GROUP BY RiskScore
 ORDER BY RiskScore;
 
+-- Churn rate % by risk tier, last year
+-- 11+ is where churn first goes over the 25% goal (score 10 = 21.5%, score 11 = 28.2%)
+WITH Scored AS (
+  SELECT
+    ChurnedInWindow,
+    CASE WHEN OnboardingCompleted = 0 THEN 4 ELSE 0 END
+    + CASE WHEN TrainingSessions = 0 THEN 3 ELSE 0 END
+    + CASE WHEN SeatUtilizationPct < 60 THEN 3 ELSE 0 END
+    + CASE WHEN DaysToGoLive >= 31 THEN 3 ELSE 0 END
+    + CASE WHEN IntegrationsConnected <= 1 THEN 2 ELSE 0 END
+    + CASE WHEN FeatureAdoptionPct < 50 THEN 2 ELSE 0 END
+    + CASE WHEN (NPS <= 6 OR NPS IS NULL) THEN 2 ELSE 0 END
+    + CASE WHEN EscalatedTickets90d >= 1 THEN 1 ELSE 0 END AS RiskScore
+  FROM vw_StartingBase
+), Tiered AS (
+  SELECT
+    ChurnedInWindow,
+    CASE
+      WHEN RiskScore >= 11 THEN 'At risk'
+      ELSE 'Low risk'
+    END AS Tier
+  FROM Scored
+)
+SELECT
+  Tier,
+  COUNT(*) AS Accounts,
+  SUM(ChurnedInWindow) AS Churned,
+  100.0 * SUM(ChurnedInWindow) / COUNT(*) AS ChurnPct
+FROM Tiered
+GROUP BY Tier
+ORDER BY ChurnPct DESC;
+
 -- Expected loss by risk tier
 WITH ScoredLastYear AS (
   -- last year's starting accounts, each with its plan and risk score
@@ -549,10 +581,10 @@ WITH ScoredLastYear AS (
   SELECT
     AccountID,
     MRR,
+    -- 11+ is where last year's churn first goes over 25% (score 10 = 21.5%, score 11 = 28.2%)
     CASE
-      WHEN a.RiskScore <= 8 THEN 'Green'
-      WHEN a.RiskScore <= 15 THEN 'Yellow'
-      ELSE 'Red'
+      WHEN a.RiskScore >= 11 THEN 'At risk'
+      ELSE 'Low risk'
     END AS Tier,
     (MRR * ChurnChance) AS ExpectedLoss
   FROM Active a
@@ -573,7 +605,7 @@ FROM Scored
 GROUP BY Tier
 ORDER BY TotalExpectedLoss DESC;
 
--- Every active account with its expected loss (exported for Tableau)
+-- Every active account with its expected loss (exported for Tableau, which filters the call list to at risk)
 WITH ScoredLastYear AS (
   -- last year's starting accounts, each with its plan and risk score
   SELECT

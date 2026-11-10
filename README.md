@@ -1,33 +1,66 @@
-# Rotawise Customer Churn Analysis
+# Customer Churn Analysis: Getting At-Risk Accounts Under 25% Churn
 
-This project builds an end-to-end ETL pipeline to analyze customer churn for Rotawise, a fictional B2B SaaS company that sells employee scheduling software. Raw data is extracted from Google Sheets via API, cleaned with Python and pandas, and loaded into SQL Server. SQL analysis finds who churns, when, and the early warning signs, and a risk score sorts every active account into green, yellow and red tiers with an action for each. Findings are shown in a Tableau dashboard.
+Churn analysis for Rotawise, a fictional business-to-business company that sells employee scheduling software by subscription. Python pulls the data from Google Sheets, cleans it and loads it into SQL Server. SQL finds the warning signs, and a Tableau dashboard shows the results.
+
+**Business question:** How do we get churn for our riskiest accounts down to 25%?
+
+Accounts with a risk score of 11 or more churned at 44% last year. Every score of 10 or under stayed under 25%.
 
 **Dashboard:** [Tableau Public](https://public.tableau.com/app/profile/joe.park2461/viz/RotawiseChurnDashboard/3Action)
 
-## Key Findings
+MRR (monthly recurring revenue) = what a customer pays each month.
 
-- Last year, Pro was 37% of churned accounts but 55% of lost MRR. Starter was 61% of churned accounts but only 18% of lost MRR.
-- 18% of monthly accounts churn by month 6.
-- High-risk accounts (score 16–20) churn at 61–73% vs 15% or less for low-risk (0–8).
-- $1.58M of MRR expected lost in the next 12 months. Red and yellow accounts are 27% of active accounts but hold $923K (59%) of it.
+## Findings
 
-## Recommendations
+**How is the risk score calculated?**\
+Each warning sign adds points. 0 = healthy, 20 = every sign.
 
-1. **Red (16–20), 1,188 accounts, $242K at risk:** one-on-one calls within 30 days, highest expected loss first.
-2. **Yellow (9–15), 7,875 accounts, $682K at risk:** group training, webinars and reminder emails for whatever sign they have.
-3. **Green (0–8):** no extra outreach. Rescore monthly and move accounts up when they cross 9.
+| Warning sign | Points |
+|---|---|
+| Onboarding not completed | 4 |
+| No training | 3 |
+| Seat use under 60% | 3 |
+| 31+ days to go live | 3 |
+| 0 or 1 integrations | 2 |
+| Feature adoption under 50% | 2 |
+| Survey score 0–6 or no answer | 2 |
+| 1+ escalated tickets | 1 |
 
-## Limitations
+**Does a higher risk score mean more churn?**\
+Yes. 4 in 10 at-risk accounts (score 11+) left last year, vs. 1 in 10 low-risk (0–10).\
+Next step: fix their warning signs to get them under 11.
 
-- The risk score only uses things we can change, not company size or industry.
+**Which plan loses the most money?**\
+Pro: $762K of MRR lost last year, more than Starter and Enterprise combined.\
+Next step: rank accounts by money at risk.
+
+**What's the strongest warning sign?**\
+Skipping onboarding: 3–4x more churn on every plan.\
+Next step: remind accounts to finish onboarding.
+
+**When do customers leave?**\
+Early: 18% of monthly-contract accounts are gone by month 6.\
+Next step: rescore accounts every month.
+
+## What to do
+
+We expect to lose $1.58M of MRR in the next 12 months. At-risk accounts are 14% of active accounts but hold $565K (36%) of it.
+
+1. **At risk (score 11+), 4,576 accounts:** call the ones with the most money at risk within 30 days. Training and reminder emails for the rest.
+2. **Start with onboarding:** it's the biggest warning sign, worth 4 points.
+3. **Low risk (score 0–10), 29,012 accounts:** rescore every month.
 
 ## Data Cleaning
 
-52,968 raw rows → 51,831 clean. Removed 1,137 duplicates, fixed labels (`PRO`/`Pro`, `EU`/`Europe`, `Y`/`TRUE`/`Yes`), set impossible values to missing (NPS of 15, 99999 employees), parsed two date formats, and filled missing MRR from pricing.
+52,968 raw rows → 51,831 clean. Removed 1,137 duplicates, fixed labels (`PRO`/`Pro`, `EU`/`Europe`, `Y`/`TRUE`/`Yes`), set impossible values to missing (a survey score of 15, 99999 employees), parsed two date formats, and filled missing MRR from pricing.
+
+## Limitations
+
+The risk score only uses things we can change, not company size or industry.
 
 ## Files
 
-- `extract.py`, `transform.py`, `load.py`: the ETL pipeline (`python load.py` runs all three)
+- `extract.py`, `transform.py`, `load.py`: the pipeline (`python load.py` runs all three)
 - `churn_analysis.sql`: SQL analysis
 - `rotawise_churn_dashboard.twb`: Tableau workbook
 - `data/`: raw data, clean data, and the scored active accounts
