@@ -1,6 +1,6 @@
 # Rotawise Customer Churn Analysis
 
-This project builds an end-to-end ETL pipeline to analyze customer churn for Rotawise, a fictional B2B SaaS company that sells employee scheduling software. Raw data is extracted from Google Sheets via API, cleaned with Python and pandas, and loaded into SQL Server. SQL analysis finds who churns, when, and the early warning signs, and a risk score turns that into a call list for the Customer Success team. Findings are shown in a Tableau dashboard.
+This project builds an end-to-end ETL pipeline to analyze customer churn for Rotawise, a fictional B2B SaaS company that sells employee scheduling software. Raw data is extracted from Google Sheets via API, cleaned with Python and pandas, and loaded into SQL Server. SQL analysis finds who churns, when, and the early warning signs, and a risk score sorts every active account into green, yellow and red tiers with an action for each. Findings are shown in a Tableau dashboard.
 
 **Dashboard:** [Tableau Public](https://public.tableau.com/app/profile/joe.park2461/viz/RotawiseChurnDashboard/3Action)
 
@@ -9,18 +9,17 @@ This project builds an end-to-end ETL pipeline to analyze customer churn for Rot
 - Last year, Pro was 37% of churned accounts but 55% of lost MRR. Starter was 61% of churned accounts but only 18% of lost MRR.
 - 18% of monthly accounts churn by month 6.
 - High-risk accounts (score 16–20) churn at 61–73% vs 15% or less for low-risk (0–8).
-- $1.58M of MRR expected lost in the next 12 months. The top 640 accounts by expected loss hold $414K of it.
+- $1.58M of MRR expected lost in the next 12 months. Red and yellow accounts are 27% of active accounts but hold $923K (59%) of it.
 
 ## Recommendations
 
-1. **Enterprise + riskiest Pro:** CSMs call the 640 accounts within 30 days, highest expected loss first.
-2. **Rest of Pro:** group training and webinars for accounts with no training or low seat use.
-3. **Starter:** build onboarding into setup with reminder emails. Starter accounts that skip onboarding churn at 38% vs 13%.
+1. **Red (16–20), 1,188 accounts, $242K at risk:** one-on-one calls within 30 days, highest expected loss first.
+2. **Yellow (9–15), 7,875 accounts, $682K at risk:** group training, webinars and reminder emails for whatever sign they have.
+3. **Green (0–8):** no extra outreach. Rescore monthly and move accounts up when they cross 9.
 
 ## Limitations
 
 - The risk score only uses things we can change, not company size or industry.
-- The 640 limit (8 CSMs × 80 accounts) is an assumption. The data doesn't say which CSM has which account.
 
 ## Data Cleaning
 

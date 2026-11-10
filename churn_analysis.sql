@@ -444,7 +444,7 @@ FROM ByPlan
 ORDER BY PctOfLostMRR DESC;
 
 
--- Phase 6: Risk score and call list
+-- Phase 6: Risk score and expected loss
 
 -- Churn gap for each warning sign (sets the points)
 WITH Signs AS (
@@ -497,7 +497,7 @@ FROM Scored
 GROUP BY RiskScore
 ORDER BY RiskScore;
 
--- Top 640 accounts by expected loss, summary by plan
+-- Expected loss by risk tier
 WITH ScoredLastYear AS (
   -- last year's starting accounts, each with its plan and risk score
   SELECT
@@ -542,51 +542,36 @@ WITH ScoredLastYear AS (
   FROM dbo.vw_Accounts
   -- keep accounts that have not churned
   WHERE Churned = 0
-), CallList AS (
-  -- the 640 accounts with the most money at risk
+), Scored AS (
+  -- every active account with its tier and expected loss
   -- each account gets the churn chance for its own plan and score
   -- (joining on score only would match every account to all 3 plans)
-  -- ORDER BY is allowed in a CTE here only because of TOP
-  SELECT TOP 640
+  SELECT
     AccountID,
-    a.[Plan],
     MRR,
-    a.RiskScore,
-    ChurnChance,
+    CASE
+      WHEN a.RiskScore <= 8 THEN 'Green'
+      WHEN a.RiskScore <= 15 THEN 'Yellow'
+      ELSE 'Red'
+    END AS Tier,
     (MRR * ChurnChance) AS ExpectedLoss
   FROM Active a
   INNER JOIN Lookup l
     ON a.RiskScore = l.RiskScore
     AND a.[Plan] = l.[Plan]
-  ORDER BY ExpectedLoss DESC
-), PlanTotals AS (
-  -- one row of totals per plan
-  SELECT
-    [Plan],
-    COUNT(*) AS Accounts,
-    SUM(MRR) AS TotalMRR,
-    SUM(ExpectedLoss) AS TotalExpectedLoss
-  FROM CallList
-  GROUP BY [Plan]
-), Summary AS (
-  -- each plan's share of the total expected loss
-  -- SUM() OVER () adds up all plans while keeping one row per plan
-  SELECT
-    [Plan],
-    Accounts,
-    TotalMRR,
-    TotalExpectedLoss,
-    100.0 * TotalExpectedLoss / SUM(TotalExpectedLoss) OVER () AS PctOfExpectedLoss
-  FROM PlanTotals
 )
 
+-- each tier's share of the total expected loss
+-- SUM() OVER () adds up all tiers while keeping one row per tier
 SELECT
-  [Plan],
-  Accounts,
-  TotalMRR,
-  TotalExpectedLoss,
-  PctOfExpectedLoss
-FROM Summary;
+  Tier,
+  COUNT(*) AS Accounts,
+  SUM(MRR) AS TotalMRR,
+  SUM(ExpectedLoss) AS TotalExpectedLoss,
+  100.0 * SUM(ExpectedLoss) / SUM(SUM(ExpectedLoss)) OVER () AS PctOfExpectedLoss
+FROM Scored
+GROUP BY Tier
+ORDER BY TotalExpectedLoss DESC;
 
 -- Every active account with its expected loss (exported for Tableau)
 WITH ScoredLastYear AS (
@@ -641,8 +626,8 @@ WITH ScoredLastYear AS (
   FROM dbo.vw_Accounts
   -- keep accounts that have not churned
   WHERE Churned = 0
-), CallList AS (
-  -- every active account with its expected loss (Tableau picks the top 640)
+), Scored AS (
+  -- every active account with its expected loss
   -- each account gets the churn chance for its own plan and score
   -- (joining on score only would match every account to all 3 plans)
   SELECT
@@ -669,5 +654,5 @@ WITH ScoredLastYear AS (
 
 -- every active account with its expected loss (for the dashboard)
 SELECT *
-FROM CallList
+FROM Scored
 ORDER BY ExpectedLoss DESC;
